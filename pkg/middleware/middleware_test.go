@@ -228,7 +228,7 @@ func TestMiddlewareContext(t *testing.T) {
 		assert.Equal(t, "Expired API key", sc.respJson["message"])
 	})
 
-	middlewareScenario(t, "Non-expired auth token in cookie which not are being rotated", func(
+	middlewareScenario(t, "Non-expired auth token in cookie which is not being rotated", func(
 		t *testing.T, sc *scenarioContext) {
 		const userID int64 = 12
 
@@ -362,18 +362,6 @@ func TestMiddlewareContext(t *testing.T) {
 	middlewareScenario(t, "When anonymous access is enabled", func(t *testing.T, sc *scenarioContext) {
 		const orgID int64 = 2
 
-		origAnonymousEnabled := setting.AnonymousEnabled
-		origAnonymousOrgName := setting.AnonymousOrgName
-		origAnonymousOrgRole := setting.AnonymousOrgRole
-		t.Cleanup(func() {
-			setting.AnonymousEnabled = origAnonymousEnabled
-			setting.AnonymousOrgName = origAnonymousOrgName
-			setting.AnonymousOrgRole = origAnonymousOrgRole
-		})
-		setting.AnonymousEnabled = true
-		setting.AnonymousOrgName = "test"
-		setting.AnonymousOrgRole = string(models.ROLE_EDITOR)
-
 		bus.AddHandler("test", func(query *models.GetOrgByNameQuery) error {
 			assert.Equal(t, "test", query.Name)
 
@@ -387,35 +375,25 @@ func TestMiddlewareContext(t *testing.T) {
 		assert.Equal(t, orgID, sc.context.OrgId)
 		assert.Equal(t, models.ROLE_EDITOR, sc.context.OrgRole)
 		assert.False(t, sc.context.IsSignedIn)
+	}, func(cfg *setting.Cfg) {
+		cfg.AnonymousEnabled = true
+		cfg.AnonymousOrgName = "test"
+		cfg.AnonymousOrgRole = string(models.ROLE_EDITOR)
 	})
 
 	t.Run("auth_proxy", func(t *testing.T) {
 		const userID int64 = 33
 		const orgID int64 = 4
 
-		origAuthProxyEnabled := setting.AuthProxyEnabled
-		origAuthProxyWhitelist := setting.AuthProxyWhitelist
-		origAuthProxyAutoSignUp := setting.AuthProxyAutoSignUp
-		origLDAPEnabled := setting.LDAPEnabled
-		origAuthProxyHeaderName := setting.AuthProxyHeaderName
-		origAuthProxyHeaderProperty := setting.AuthProxyHeaderProperty
-		origAuthProxyHeaders := setting.AuthProxyHeaders
-		t.Cleanup(func() {
-			setting.AuthProxyEnabled = origAuthProxyEnabled
-			setting.AuthProxyWhitelist = origAuthProxyWhitelist
-			setting.AuthProxyAutoSignUp = origAuthProxyAutoSignUp
-			setting.LDAPEnabled = origLDAPEnabled
-			setting.AuthProxyHeaderName = origAuthProxyHeaderName
-			setting.AuthProxyHeaderProperty = origAuthProxyHeaderProperty
-			setting.AuthProxyHeaders = origAuthProxyHeaders
-		})
-		setting.AuthProxyEnabled = true
-		setting.AuthProxyWhitelist = ""
-		setting.AuthProxyAutoSignUp = true
-		setting.LDAPEnabled = true
-		setting.AuthProxyHeaderName = "X-WEBAUTH-USER"
-		setting.AuthProxyHeaderProperty = "username"
-		setting.AuthProxyHeaders = map[string]string{"Groups": "X-WEBAUTH-GROUPS"}
+		configure := func(cfg *setting.Cfg) {
+			cfg.AuthProxyEnabled = true
+			cfg.AuthProxyWhitelist = ""
+			cfg.AuthProxyAutoSignUp = true
+			cfg.LDAPEnabled = true
+			cfg.AuthProxyHeaderName = "X-WEBAUTH-USER"
+			cfg.AuthProxyHeaderProperty = "username"
+			cfg.AuthProxyHeaders = map[string]string{"Groups": "X-WEBAUTH-GROUPS"}
+		}
 
 		const hdrName = "markelog"
 		const group = "grafana-core-team"
@@ -431,25 +409,16 @@ func TestMiddlewareContext(t *testing.T) {
 			require.NoError(t, err)
 			sc.fakeReq("GET", "/")
 
-			sc.req.Header.Set(setting.AuthProxyHeaderName, hdrName)
+			sc.req.Header.Set(sc.cfg.AuthProxyHeaderName, hdrName)
 			sc.req.Header.Set("X-WEBAUTH-GROUPS", group)
 			sc.exec()
 
 			assert.True(t, sc.context.IsSignedIn)
 			assert.Equal(t, userID, sc.context.UserId)
 			assert.Equal(t, orgID, sc.context.OrgId)
-		})
+		}, configure)
 
 		middlewareScenario(t, "Should respect auto signup option", func(t *testing.T, sc *scenarioContext) {
-			origLDAPEnabled = setting.LDAPEnabled
-			origAuthProxyAutoSignUp = setting.AuthProxyAutoSignUp
-			t.Cleanup(func() {
-				setting.LDAPEnabled = origLDAPEnabled
-				setting.AuthProxyAutoSignUp = origAuthProxyAutoSignUp
-			})
-			setting.LDAPEnabled = false
-			setting.AuthProxyAutoSignUp = false
-
 			var actualAuthProxyAutoSignUp *bool = nil
 
 			bus.AddHandler("test", func(cmd *models.UpsertUserCommand) error {
@@ -464,18 +433,13 @@ func TestMiddlewareContext(t *testing.T) {
 			assert.False(t, *actualAuthProxyAutoSignUp)
 			assert.Equal(t, sc.resp.Code, 407)
 			assert.Nil(t, sc.context)
+		}, func(cfg *setting.Cfg) {
+			configure(cfg)
+			cfg.LDAPEnabled = false
+			cfg.AuthProxyAutoSignUp = false
 		})
 
 		middlewareScenario(t, "Should create an user from a header", func(t *testing.T, sc *scenarioContext) {
-			origLDAPEnabled = setting.LDAPEnabled
-			origAuthProxyAutoSignUp = setting.AuthProxyAutoSignUp
-			t.Cleanup(func() {
-				setting.LDAPEnabled = origLDAPEnabled
-				setting.AuthProxyAutoSignUp = origAuthProxyAutoSignUp
-			})
-			setting.LDAPEnabled = false
-			setting.AuthProxyAutoSignUp = true
-
 			bus.AddHandler("test", func(query *models.GetSignedInUserQuery) error {
 				if query.UserId > 0 {
 					query.Result = &models.SignedInUser{OrgId: orgID, UserId: userID}
@@ -496,13 +460,17 @@ func TestMiddlewareContext(t *testing.T) {
 			assert.True(t, sc.context.IsSignedIn)
 			assert.Equal(t, userID, sc.context.UserId)
 			assert.Equal(t, orgID, sc.context.OrgId)
+		}, func(cfg *setting.Cfg) {
+			configure(cfg)
+			cfg.LDAPEnabled = false
+			cfg.AuthProxyAutoSignUp = true
 		})
 
 		middlewareScenario(t, "Should get an existing user from header", func(t *testing.T, sc *scenarioContext) {
 			const userID int64 = 12
 			const orgID int64 = 2
 
-			origLDAPEnabled = setting.LDAPEnabled
+			origLDAPEnabled := setting.LDAPEnabled
 			t.Cleanup(func() {
 				setting.LDAPEnabled = origLDAPEnabled
 			})
@@ -528,8 +496,8 @@ func TestMiddlewareContext(t *testing.T) {
 		})
 
 		middlewareScenario(t, "Should allow the request from whitelist IP", func(t *testing.T, sc *scenarioContext) {
-			origAuthProxyWhitelist = setting.AuthProxyWhitelist
-			origLDAPEnabled = setting.LDAPEnabled
+			origAuthProxyWhitelist := setting.AuthProxyWhitelist
+			origLDAPEnabled := setting.LDAPEnabled
 			t.Cleanup(func() {
 				setting.AuthProxyWhitelist = origAuthProxyWhitelist
 				setting.LDAPEnabled = origLDAPEnabled
@@ -558,8 +526,8 @@ func TestMiddlewareContext(t *testing.T) {
 		})
 
 		middlewareScenario(t, "Should not allow the request from whitelist IP", func(t *testing.T, sc *scenarioContext) {
-			origAuthProxyWhitelist = setting.AuthProxyWhitelist
-			origLDAPEnabled = setting.LDAPEnabled
+			origAuthProxyWhitelist := setting.AuthProxyWhitelist
+			origLDAPEnabled := setting.LDAPEnabled
 			t.Cleanup(func() {
 				setting.AuthProxyWhitelist = origAuthProxyWhitelist
 				setting.LDAPEnabled = origLDAPEnabled
@@ -620,11 +588,16 @@ func middlewareScenario(t *testing.T, desc string, fn scenarioFunc, cbs ...func(
 	t.Run(desc, func(t *testing.T) {
 		t.Cleanup(bus.ClearBusHandlers)
 
-		// Move these to cfg
 		loginMaxLifetime, err := gtime.ParseDuration("30d")
 		require.NoError(t, err)
+		cfg := setting.NewCfg()
+		cfg.LoginCookieName = "grafana_session"
+		cfg.LoginMaxLifetime = loginMaxLifetime
+		for _, cb := range cbs {
+			cb(cfg)
+		}
 
-		sc := &scenarioContext{t: t}
+		sc := &scenarioContext{t: t, cfg: cfg}
 
 		viewsPath, err := filepath.Abs("../../public/views")
 		require.NoError(t, err)
@@ -636,18 +609,12 @@ func middlewareScenario(t *testing.T, desc string, fn scenarioFunc, cbs ...func(
 			Delims:    macaron.Delims{Left: "[[", Right: "]]"},
 		}))
 
-		sc.userAuthTokenService = auth.NewFakeUserAuthTokenService()
-		sc.remoteCacheService = remotecache.NewFakeStore(t)
-
-		cfg := setting.NewCfg()
-		cfg.LoginCookieName = "grafana_session"
-		cfg.LoginMaxLifetime = loginMaxLifetime
-		for _, cb := range cbs {
-			cb(cfg)
-		}
 		ctxHdlr := getContextHandler(t, cfg)
 		sc.m.Use(ctxHdlr.Middleware)
 		sc.m.Use(OrgRedirect())
+
+		sc.userAuthTokenService = ctxHdlr.AuthTokenService.(*auth.FakeUserAuthTokenService)
+		sc.remoteCacheService = ctxHdlr.RemoteCache
 
 		sc.defaultHandler = func(c *models.ReqContext) {
 			require.NotNil(t, c)
